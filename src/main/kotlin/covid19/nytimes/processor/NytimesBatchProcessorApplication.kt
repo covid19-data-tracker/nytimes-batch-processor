@@ -95,27 +95,26 @@ open class NytDataStepBaseConfiguration<T>(
 					.sql(sql)
 					.build()
 
-	private fun <T> buildReaderFor(resource: Resource, description: String, fsm: FieldSetMapper<T>): FlatFileItemReader<T> {
-		val dlt = DelimitedLineTokenizer()
-				.apply {
-					setDelimiter(",")
-					afterPropertiesSet()
-				}
-		val lm = DefaultLineMapper<T>()
-				.apply {
-					setLineTokenizer(dlt)
-					setFieldSetMapper(fsm)
-					afterPropertiesSet()
-				}
-		return FlatFileItemReader<T>()
-				.apply {
-					setResource(resource)
-					setName("read-${description}")
-					setLinesToSkip(1)
-					setLineMapper(lm)
-					afterPropertiesSet()
-				}
-	}
+	private fun <T> buildReaderFor(resource: Resource, description: String, fsm: FieldSetMapper<T>): ItemReader<T> =
+			FlatFileItemReader<T>()
+					.apply {
+						val dlt = DelimitedLineTokenizer()
+								.apply {
+									setDelimiter(",")
+									afterPropertiesSet()
+								}
+						val lm = DefaultLineMapper<T>()
+								.apply {
+									setLineTokenizer(dlt)
+									setFieldSetMapper(fsm)
+									afterPropertiesSet()
+								}
+						setResource(resource)
+						setName("read-${description}")
+						setLinesToSkip(1)
+						setLineMapper(lm)
+						afterPropertiesSet()
+					}
 
 }
 
