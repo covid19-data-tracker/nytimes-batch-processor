@@ -35,6 +35,8 @@ import javax.sql.DataSource
 @EnableConfigurationProperties(NytProcessorProperties::class)
 class NytimesBatchProcessorApplication {
 	companion object {
+		const val USA_COUNTIES_TABLE = "covid19_usa_by_counties"
+		const val USA_STATES_TABLE = "covid19_usa_by_states"
 		val RUNTIME = System.currentTimeMillis()
 	}
 }
@@ -106,10 +108,12 @@ class JobConfiguration(
 
 @Configuration
 class CountiesStepConfiguration(
+		private val ds: DataSource,
 		private val stepBuilderFactory: StepBuilderFactory,
 		private val nytProcessorProperties: NytProcessorProperties) {
 
 	private val name = "counties"
+	private val table = NytimesBatchProcessorApplication.USA_COUNTIES_TABLE
 
 	@Bean
 	fun countiesReader() = buildReaderFor(
@@ -121,9 +125,21 @@ class CountiesStepConfiguration(
 	)
 
 	@Bean
-	fun countiesWriter() = ItemWriter<CountyBreakdown> { counties ->
-		counties.forEach { println(it) }
-	}
+	fun countiesWriter(): ItemWriter<CountyBreakdown> =
+			buildWriterFor(ds,
+					"""
+						insert into ${table}(date ,  state, fips, cases, deaths , county) values (?, ? , ? , ?, ?, ?)
+						ON CONFLICT ON CONSTRAINT covid19_usa_by_counties_date_county_state_fips_key 
+						DO NOTHING
+					""".trimIndent()
+			) { state, ps ->
+				ps.setDate(1, java.sql.Date(state.date.time))
+				ps.setString(2, state.state)
+				ps.setInt(3, state.fips ?: -1)
+				ps.setInt(4, state.cases)
+				ps.setInt(5, state.deaths)
+				ps.setString(6, state.county)
+			}
 
 	@Bean
 	fun countiesStep() =
@@ -152,15 +168,18 @@ class StatesStepConfiguration(
 			}
 	)
 
+	private val table = NytimesBatchProcessorApplication.USA_STATES_TABLE
+
 	@Bean
 	fun statesWriter(): ItemWriter<StateBreakdown> =
-			buildWriterFor (ds,
+			buildWriterFor(ds,
 					"""
-						insert into covid_state_breakdown(date, state, fips, cases, deaths) values (? , ? , ?, ?, ?)
-						ON CONFLICT ON CONSTRAINT covid_state_breakdown_date_state_fips_key 
+						insert into ${table}(date, state, fips, cases, deaths)
+								values (? , ? , ?, ?, ?)
+						ON CONFLICT ON CONSTRAINT covid19_usa_by_states_date_state_fips_key 
 						DO NOTHING
 					""".trimIndent()
-					) { state, ps ->
+			) { state, ps ->
 				ps.setDate(1, java.sql.Date(state.date.time))
 				ps.setString(2, state.state)
 				ps.setInt(3, state.fips ?: -1)
