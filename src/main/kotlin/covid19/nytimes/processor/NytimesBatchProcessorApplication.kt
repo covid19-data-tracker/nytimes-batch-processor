@@ -1,9 +1,10 @@
 package covid19.nytimes.processor
 
-import org.apache.commons.logging.LogFactory
 import org.springframework.batch.core.configuration.annotation.EnableBatchProcessing
 import org.springframework.batch.core.configuration.annotation.JobBuilderFactory
 import org.springframework.batch.core.configuration.annotation.StepBuilderFactory
+import org.springframework.batch.core.step.tasklet.TaskletStep
+import org.springframework.batch.item.ItemReader
 import org.springframework.batch.item.ItemWriter
 import org.springframework.batch.item.database.builder.JdbcBatchItemWriterBuilder
 import org.springframework.batch.item.file.FlatFileItemReader
@@ -18,7 +19,6 @@ import org.springframework.boot.runApplication
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import org.springframework.core.io.Resource
-import org.springframework.stereotype.Component
 import java.sql.PreparedStatement
 import java.util.*
 import javax.sql.DataSource
@@ -49,152 +49,148 @@ fun main(args: Array<String>) {
 fun intOrNull(str: String?) =
 		if (str != null && str.trim() != "") Integer.parseInt(str) else null
 
-fun parseDateString(str: String): Date {
-	val nums = str.split("-").map { Integer.parseInt(it) }
-	val y = nums[0]
-	val m = nums[1]
-	val d = nums[2]
-	val c = Calendar.getInstance()
-	c.set(Calendar.YEAR, y)
-	c.set(Calendar.DAY_OF_MONTH, d)
-	c.set(Calendar.MONTH, m)
-	return c.time
-}
-
-fun <T> buildWriterFor(ds: DataSource, sql: String, pss: (T, PreparedStatement) -> Unit): ItemWriter<T> =
-		JdbcBatchItemWriterBuilder<T>()
-				.dataSource(ds)
-				.assertUpdates(false)
-				.itemPreparedStatementSetter(pss)
-				.sql(sql)
-				.build()
-
-inline fun <reified T> buildReaderFor(resource: Resource, description: String, fsm: FieldSetMapper<T>): FlatFileItemReader<T> {
-	val dlt = DelimitedLineTokenizer()
-			.apply {
-				setDelimiter(",")
-				afterPropertiesSet()
-			}
-	val lm = DefaultLineMapper<T>()
-			.apply {
-				setLineTokenizer(dlt)
-				setFieldSetMapper(fsm)
-				afterPropertiesSet()
-			}
-	return FlatFileItemReader<T>()
-			.apply {
-				setResource(resource)
-				setName("read-${description}")
-				setLinesToSkip(1)
-				setLineMapper(lm)
-				afterPropertiesSet()
-			}
-}
+fun parseDateString(str: String) =
+		Calendar
+				.getInstance()
+				.apply {
+					val nums = str.split("-").map { Integer.parseInt(it) }
+					set(Calendar.YEAR, nums[0])
+					set(Calendar.DAY_OF_MONTH, nums[2])
+					set(Calendar.MONTH, nums[1])
+				}
+				.time
 
 @Configuration
 class JobConfiguration(
 		private val nytProcessorProperties: NytProcessorProperties,
 		private val jobBuilderFactory: JobBuilderFactory,
-		private val statesStepConfiguration: StatesStepConfiguration,
-		private val countiesStep: CountiesStepConfiguration) {
+		private val statesStepConfiguration: StateStepConfiguration,
+		private val countyStep: CountyStepConfiguration) {
 
 	@Bean
 	fun job() = this.jobBuilderFactory["nytimes-${nytProcessorProperties.runtime}"]
-			.start(countiesStep.countiesStep())
-			.next(statesStepConfiguration.statesStep())
+			.start(countyStep.stepBean())
+			.next(statesStepConfiguration.stepBean())
 			.build()
 }
 
-
-@Configuration
-class CountiesStepConfiguration(
+open class NytDataStepBaseConfiguration<T>(
 		private val ds: DataSource,
 		private val stepBuilderFactory: StepBuilderFactory,
-		private val nytProcessorProperties: NytProcessorProperties) {
+		private val fieldSetMapper: FieldSetMapper<T>,
+		private val resource: Resource,
+		private val preparedStatementSetter: (T, PreparedStatement) -> Unit,
+		private val sql: String,
+		private val name: String) {
 
-	private val name = "counties"
-	private val table = NytimesBatchProcessorApplication.USA_COUNTIES_TABLE
+	open fun readerBean(): ItemReader<T> = this.buildReaderFor(this.resource, this.name, this.fieldSetMapper)
+	open fun writerBean(): ItemWriter<T> = this.buildWriterFor(this.ds, this.sql, this.preparedStatementSetter)
+	open fun stepBean(): TaskletStep = this.stepBuilderFactory[this.name].chunk<T, T>(1000).reader(this.readerBean()).writer(this.writerBean()).build()
 
-	@Bean
-	fun countiesReader() = buildReaderFor(
-			this.nytProcessorProperties.byCountyUrl,
-			name,
-			FieldSetMapper {
-				CountyBreakdown(parseDateString(it.readString(0)), it.readString(1), it.readString(2), intOrNull(it.readString(3)), it.readInt(4), it.readInt(5))
-			}
-	)
-
-	@Bean
-	fun countiesWriter(): ItemWriter<CountyBreakdown> =
-			buildWriterFor(ds,
-					"""
-						insert into ${table}(date ,  state, fips, cases, deaths , county) values (?, ? , ? , ?, ?, ?)
-						ON CONFLICT ON CONSTRAINT covid19_usa_by_counties_date_county_state_fips_key 
-						DO NOTHING
-					""".trimIndent()
-			) { state, ps ->
-				ps.setDate(1, java.sql.Date(state.date.time))
-				ps.setString(2, state.state)
-				ps.setInt(3, state.fips ?: -1)
-				ps.setInt(4, state.cases)
-				ps.setInt(5, state.deaths)
-				ps.setString(6, state.county)
-			}
-
-	@Bean
-	fun countiesStep() =
-			stepBuilderFactory[name]
-					.chunk<CountyBreakdown, CountyBreakdown>(100)
-					.reader(countiesReader())
-					.writer(countiesWriter())
+	private fun <T> buildWriterFor(ds: DataSource, sql: String, pss: (T, PreparedStatement) -> Unit): ItemWriter<T> =
+			JdbcBatchItemWriterBuilder<T>()
+					.dataSource(ds)
+					.assertUpdates(false)
+					.itemPreparedStatementSetter(pss)
+					.sql(sql)
 					.build()
+
+	private fun <T> buildReaderFor(resource: Resource, description: String, fsm: FieldSetMapper<T>): FlatFileItemReader<T> {
+		val dlt = DelimitedLineTokenizer()
+				.apply {
+					setDelimiter(",")
+					afterPropertiesSet()
+				}
+		val lm = DefaultLineMapper<T>()
+				.apply {
+					setLineTokenizer(dlt)
+					setFieldSetMapper(fsm)
+					afterPropertiesSet()
+				}
+		return FlatFileItemReader<T>()
+				.apply {
+					setResource(resource)
+					setName("read-${description}")
+					setLinesToSkip(1)
+					setLineMapper(lm)
+					afterPropertiesSet()
+				}
+	}
 
 }
 
 @Configuration
-class StatesStepConfiguration(
-		private val ds: DataSource,
-		private val stepBuilderFactory: StepBuilderFactory,
-		private val nytProcessorProperties: NytProcessorProperties) {
+class CountyStepConfiguration(dataSource: DataSource, stepBuilderFactory: StepBuilderFactory, props: NytProcessorProperties) :
+		NytDataStepBaseConfiguration<CountyBreakdown>(
+				dataSource,
+				stepBuilderFactory,
+				FieldSetMapper {
+					CountyBreakdown(parseDateString(it.readString(0)), it.readString(1), it.readString(2), intOrNull(it.readString(3)), it.readInt(4), it.readInt(5))
+				},
+				props.byCountyUrl, { state, ps ->
+			ps.setDate(1, java.sql.Date(state.date.time))
+			ps.setString(2, state.state)
+			ps.setInt(3, state.fips ?: -1)
+			ps.setInt(4, state.cases)
+			ps.setInt(5, state.deaths)
+			ps.setString(6, state.county)
+		},
+		"""
+		insert into ${NytimesBatchProcessorApplication.USA_COUNTIES_TABLE}(date, state, fips, cases, deaths , county) values (?, ? , ? , ?, ?, ?)
+		ON CONFLICT ON CONSTRAINT covid19_usa_by_counties_date_county_state_fips_key DO NOTHING
+		""",
+				NAME
+		) {
+	companion object {
+		const val NAME = "counties"
+	}
 
-	private val name = "states"
+	@Bean("${NAME}-reader")
+	override fun readerBean() = super.readerBean()
 
-	@Bean
-	fun statesReader() = buildReaderFor(
-			this.nytProcessorProperties.byStateUrl,
-			name,
-			FieldSetMapper {
-				StateBreakdown(parseDateString(it.readString(0)), it.readString(1), intOrNull(it.readString(2)), it.readInt(3), it.readInt(4))
-			}
-	)
+	@Bean("${NAME}-writer")
+	override fun writerBean() = super.writerBean()
 
-	private val table = NytimesBatchProcessorApplication.USA_STATES_TABLE
+	@Bean("${NAME}-step")
+	override fun stepBean() = super.stepBean()
+}
 
-	@Bean
-	fun statesWriter(): ItemWriter<StateBreakdown> =
-			buildWriterFor(ds,
-					"""
-						insert into ${table}(date, state, fips, cases, deaths)
-								values (? , ? , ?, ?, ?)
-						ON CONFLICT ON CONSTRAINT covid19_usa_by_states_date_state_fips_key 
-						DO NOTHING
-					""".trimIndent()
-			) { state, ps ->
-				ps.setDate(1, java.sql.Date(state.date.time))
-				ps.setString(2, state.state)
-				ps.setInt(3, state.fips ?: -1)
-				ps.setInt(4, state.cases)
-				ps.setInt(5, state.deaths)
-			}
 
-	@Bean
-	fun statesStep() =
-			stepBuilderFactory[name]
-					.chunk<StateBreakdown, StateBreakdown>(100)
-					.reader(statesReader())
-					.writer(statesWriter())
-					.build()
+@Configuration
+class StateStepConfiguration(dataSource: DataSource, stepBuilderFactory: StepBuilderFactory, props: NytProcessorProperties) :
+		NytDataStepBaseConfiguration<StateBreakdown>(
+				dataSource,
+				stepBuilderFactory,
+				FieldSetMapper {
+					StateBreakdown(parseDateString(it.readString(0)), it.readString(1), intOrNull(it.readString(2)), it.readInt(3), it.readInt(4))
+				},
+				props.byStateUrl,
+				{ state, ps ->
+					ps.setDate(1, java.sql.Date(state.date.time))
+					ps.setString(2, state.state)
+					ps.setInt(3, state.fips ?: -1)
+					ps.setInt(4, state.cases)
+					ps.setInt(5, state.deaths)
+				},
+		"""
+	 	  INSERT INTO ${NytimesBatchProcessorApplication.USA_STATES_TABLE}(date, state, fips, cases, deaths) values (? , ? , ?, ?, ?) 
+			ON CONFLICT ON CONSTRAINT covid19_usa_by_states_date_state_fips_key DO NOTHING
+		""",
+				NAME
+	){
 
+	companion object {
+		const val NAME = "states"
+	}
+
+	@Bean("${NAME}-reader")
+	override fun readerBean() = super.readerBean()
+
+	@Bean("${NAME}-writer")
+	override fun writerBean() = super.writerBean()
+
+	@Bean("${NAME}-step")
+	override fun stepBean() = super.stepBean()
 }
 
 
@@ -210,21 +206,6 @@ data class StateBreakdown(val date: Date,
                           val fips: Int?,
                           val cases: Int,
                           val deaths: Int)
-
-
-@Component
-class Runner(private val nytProcessorProperties: NytProcessorProperties) {
-
-	private val log = LogFactory.getLog(Runner::class.java)
-
-	@Bean
-	fun go() {
-		this.log.info("by-state: ${this.nytProcessorProperties.byStateUrl}")
-		this.log.info("by-county: ${this.nytProcessorProperties.byCountyUrl}")
-		this.log.info("runtime: ${this.nytProcessorProperties.runtime}")
-	}
-}
-
 
 @ConstructorBinding
 @ConfigurationProperties("nytimes")
