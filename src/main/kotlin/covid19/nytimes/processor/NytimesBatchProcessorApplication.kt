@@ -5,6 +5,7 @@ import org.springframework.batch.core.configuration.annotation.EnableBatchProces
 import org.springframework.batch.core.configuration.annotation.JobBuilderFactory
 import org.springframework.batch.core.configuration.annotation.StepBuilderFactory
 import org.springframework.batch.item.ItemWriter
+import org.springframework.batch.item.database.builder.JdbcBatchItemWriterBuilder
 import org.springframework.batch.item.file.FlatFileItemReader
 import org.springframework.batch.item.file.mapping.DefaultLineMapper
 import org.springframework.batch.item.file.mapping.FieldSetMapper
@@ -18,7 +19,9 @@ import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import org.springframework.core.io.Resource
 import org.springframework.stereotype.Component
+import java.sql.PreparedStatement
 import java.util.*
+import javax.sql.DataSource
 
 /**
  *
@@ -49,8 +52,20 @@ fun parseDateString(str: String): Date {
 	val y = nums[0]
 	val m = nums[1]
 	val d = nums[2]
-	return Date(y, m, d)
+	val c = Calendar.getInstance()
+	c.set(Calendar.YEAR, y)
+	c.set(Calendar.DAY_OF_MONTH, d)
+	c.set(Calendar.MONTH, m)
+	return c.time
 }
+
+fun <T> buildWriterFor(ds: DataSource, sql: String, pss: (T, PreparedStatement) -> Unit): ItemWriter<T> =
+		JdbcBatchItemWriterBuilder<T>()
+				.dataSource(ds)
+				.assertUpdates(false)
+				.itemPreparedStatementSetter(pss)
+				.sql(sql)
+				.build()
 
 inline fun <reified T> buildReaderFor(resource: Resource, description: String, fsm: FieldSetMapper<T>): FlatFileItemReader<T> {
 	val dlt = DelimitedLineTokenizer()
@@ -76,13 +91,13 @@ inline fun <reified T> buildReaderFor(resource: Resource, description: String, f
 
 @Configuration
 class JobConfiguration(
-		private val nytProcessorProperties: NytProcessorProperties ,
+		private val nytProcessorProperties: NytProcessorProperties,
 		private val jobBuilderFactory: JobBuilderFactory,
 		private val statesStepConfiguration: StatesStepConfiguration,
 		private val countiesStep: CountiesStepConfiguration) {
 
 	@Bean
-	fun job() = this.jobBuilderFactory["nytimes-${  nytProcessorProperties.runtime }"]
+	fun job() = this.jobBuilderFactory["nytimes-${nytProcessorProperties.runtime}"]
 			.start(countiesStep.countiesStep())
 			.next(statesStepConfiguration.statesStep())
 			.build()
@@ -122,6 +137,7 @@ class CountiesStepConfiguration(
 
 @Configuration
 class StatesStepConfiguration(
+		private val ds: DataSource,
 		private val stepBuilderFactory: StepBuilderFactory,
 		private val nytProcessorProperties: NytProcessorProperties) {
 
@@ -137,9 +153,20 @@ class StatesStepConfiguration(
 	)
 
 	@Bean
-	fun statesWriter() = ItemWriter<StateBreakdown> { states ->
-		states.forEach { println(it) }
-	}
+	fun statesWriter(): ItemWriter<StateBreakdown> =
+			buildWriterFor (ds,
+					"""
+						insert into covid_state_breakdown(date, state, fips, cases, deaths) values (? , ? , ?, ?, ?)
+						ON CONFLICT ON CONSTRAINT covid_state_breakdown_date_state_fips_key 
+						DO NOTHING
+					""".trimIndent()
+					) { state, ps ->
+				ps.setDate(1, java.sql.Date(state.date.time))
+				ps.setString(2, state.state)
+				ps.setInt(3, state.fips ?: -1)
+				ps.setInt(4, state.cases)
+				ps.setInt(5, state.deaths)
+			}
 
 	@Bean
 	fun statesStep() =
@@ -183,4 +210,3 @@ class Runner(private val nytProcessorProperties: NytProcessorProperties) {
 @ConstructorBinding
 @ConfigurationProperties("nytimes")
 data class NytProcessorProperties(val byCountyUrl: Resource, val byStateUrl: Resource, val runtime: Long)
-
