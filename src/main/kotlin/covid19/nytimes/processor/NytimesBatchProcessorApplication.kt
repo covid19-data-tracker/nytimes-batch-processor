@@ -120,25 +120,26 @@ open class NytDataStepBaseConfiguration<T>(
 }
 
 @Configuration
-class CountyStepConfiguration(dataSource: DataSource, stepBuilderFactory: StepBuilderFactory, props: NytProcessorProperties) :
+class CountyStepConfiguration(ds: DataSource, sbf: StepBuilderFactory, props: NytProcessorProperties) :
 		NytDataStepBaseConfiguration<CountyBreakdown>(
-				dataSource,
-				stepBuilderFactory,
+				ds,
+				sbf,
 				FieldSetMapper {
 					CountyBreakdown(parseDateString(it.readString(0)), it.readString(1), it.readString(2), intOrNull(it.readString(3)), it.readInt(4), it.readInt(5))
 				},
-				props.byCountyUrl, { state, ps ->
-			ps.setDate(1, java.sql.Date(state.date.time))
-			ps.setString(2, state.state)
-			ps.setInt(3, state.fips ?: -1)
-			ps.setInt(4, state.cases)
-			ps.setInt(5, state.deaths)
-			ps.setString(6, state.county)
-		},
-		"""
-		insert into ${NytimesBatchProcessorApplication.USA_COUNTIES_TABLE}(date, state, fips, cases, deaths , county) values (?, ? , ? , ?, ?, ?)
-		ON CONFLICT ON CONSTRAINT covid19_usa_by_counties_date_county_state_fips_key DO NOTHING
-		""",
+				props.byCountyUrl,
+				{ state, ps ->
+					ps.setDate(1, java.sql.Date(state.date.time))
+					ps.setString(2, state.state)
+					ps.setInt(3, state.fips ?: -1)
+					ps.setInt(4, state.cases)
+					ps.setInt(5, state.deaths)
+					ps.setString(6, state.county)
+				},
+				"""
+				insert into ${NytimesBatchProcessorApplication.USA_COUNTIES_TABLE}(date, state, fips, cases, deaths , county) values (?, ? , ? , ?, ?, ?)
+				ON CONFLICT ON CONSTRAINT covid19_usa_by_counties_date_county_state_fips_key DO NOTHING
+				""",
 				NAME
 		) {
 	companion object {
@@ -157,10 +158,10 @@ class CountyStepConfiguration(dataSource: DataSource, stepBuilderFactory: StepBu
 
 
 @Configuration
-class StateStepConfiguration(dataSource: DataSource, stepBuilderFactory: StepBuilderFactory, props: NytProcessorProperties) :
+class StateStepConfiguration(ds: DataSource, sbf: StepBuilderFactory, props: NytProcessorProperties) :
 		NytDataStepBaseConfiguration<StateBreakdown>(
-				dataSource,
-				stepBuilderFactory,
+				ds,
+				sbf,
 				FieldSetMapper {
 					StateBreakdown(parseDateString(it.readString(0)), it.readString(1), intOrNull(it.readString(2)), it.readInt(3), it.readInt(4))
 				},
@@ -172,12 +173,12 @@ class StateStepConfiguration(dataSource: DataSource, stepBuilderFactory: StepBui
 					ps.setInt(4, state.cases)
 					ps.setInt(5, state.deaths)
 				},
-		"""
-	 	  INSERT INTO ${NytimesBatchProcessorApplication.USA_STATES_TABLE}(date, state, fips, cases, deaths) values (? , ? , ?, ?, ?) 
-			ON CONFLICT ON CONSTRAINT covid19_usa_by_states_date_state_fips_key DO NOTHING
-		""",
+				"""
+	 	    INSERT INTO ${NytimesBatchProcessorApplication.USA_STATES_TABLE}(date, state, fips, cases, deaths) values (? , ? , ?, ?, ?) 
+				ON CONFLICT ON CONSTRAINT covid19_usa_by_states_date_state_fips_key DO NOTHING
+				""",
 				NAME
-	){
+		) {
 
 	companion object {
 		const val NAME = "states"
