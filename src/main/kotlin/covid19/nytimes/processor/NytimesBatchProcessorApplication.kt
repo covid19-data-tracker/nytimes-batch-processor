@@ -1,11 +1,9 @@
 package covid19.nytimes.processor
 
 import org.apache.commons.logging.LogFactory
-import org.springframework.batch.core.JobParametersIncrementer
 import org.springframework.batch.core.configuration.annotation.EnableBatchProcessing
 import org.springframework.batch.core.configuration.annotation.JobBuilderFactory
 import org.springframework.batch.core.configuration.annotation.StepBuilderFactory
-import org.springframework.batch.core.launch.support.RunIdIncrementer
 import org.springframework.batch.item.ItemWriter
 import org.springframework.batch.item.file.FlatFileItemReader
 import org.springframework.batch.item.file.mapping.DefaultLineMapper
@@ -32,13 +30,19 @@ import java.util.*
 @SpringBootApplication
 @EnableBatchProcessing
 @EnableConfigurationProperties(NytProcessorProperties::class)
-class NytimesBatchProcessorApplication
-
-fun main(args: Array<String>) {
-	runApplication<NytimesBatchProcessorApplication>(*args)
+class NytimesBatchProcessorApplication {
+	companion object {
+		val RUNTIME = System.currentTimeMillis()
+	}
 }
 
-fun intOrNull(str: String?) = if (str != null && str.trim() != "") Integer.parseInt(str) else null
+fun main(args: Array<String>) {
+	val newArgs = arrayOf(*args, "--nytimes.runtime=${NytimesBatchProcessorApplication.RUNTIME}")
+	runApplication<NytimesBatchProcessorApplication>(*newArgs)
+}
+
+fun intOrNull(str: String?) =
+		if (str != null && str.trim() != "") Integer.parseInt(str) else null
 
 fun parseDateString(str: String): Date {
 	val nums = str.split("-").map { Integer.parseInt(it) }
@@ -72,12 +76,13 @@ inline fun <reified T> buildReaderFor(resource: Resource, description: String, f
 
 @Configuration
 class JobConfiguration(
+		private val nytProcessorProperties: NytProcessorProperties ,
 		private val jobBuilderFactory: JobBuilderFactory,
 		private val statesStepConfiguration: StatesStepConfiguration,
 		private val countiesStep: CountiesStepConfiguration) {
 
 	@Bean
-	fun job() = this.jobBuilderFactory["nytimes"]
+	fun job() = this.jobBuilderFactory["nytimes-${  nytProcessorProperties.runtime }"]
 			.start(countiesStep.countiesStep())
 			.next(statesStepConfiguration.statesStep())
 			.build()
@@ -89,10 +94,12 @@ class CountiesStepConfiguration(
 		private val stepBuilderFactory: StepBuilderFactory,
 		private val nytProcessorProperties: NytProcessorProperties) {
 
+	private val name = "counties"
+
 	@Bean
 	fun countiesReader() = buildReaderFor(
 			this.nytProcessorProperties.byCountyUrl,
-			"counties",
+			name,
 			FieldSetMapper {
 				CountyBreakdown(parseDateString(it.readString(0)), it.readString(1), it.readString(2), intOrNull(it.readString(3)), it.readInt(4), it.readInt(5))
 			}
@@ -105,7 +112,7 @@ class CountiesStepConfiguration(
 
 	@Bean
 	fun countiesStep() =
-			stepBuilderFactory["counties"]
+			stepBuilderFactory[name]
 					.chunk<CountyBreakdown, CountyBreakdown>(100)
 					.reader(countiesReader())
 					.writer(countiesWriter())
@@ -118,10 +125,12 @@ class StatesStepConfiguration(
 		private val stepBuilderFactory: StepBuilderFactory,
 		private val nytProcessorProperties: NytProcessorProperties) {
 
+	private val name = "states"
+
 	@Bean
 	fun statesReader() = buildReaderFor(
 			this.nytProcessorProperties.byStateUrl,
-			"counties",
+			name,
 			FieldSetMapper {
 				StateBreakdown(parseDateString(it.readString(0)), it.readString(1), intOrNull(it.readString(2)), it.readInt(3), it.readInt(4))
 			}
@@ -134,7 +143,7 @@ class StatesStepConfiguration(
 
 	@Bean
 	fun statesStep() =
-			stepBuilderFactory["counties"]
+			stepBuilderFactory[name]
 					.chunk<StateBreakdown, StateBreakdown>(100)
 					.reader(statesReader())
 					.writer(statesWriter())
@@ -165,12 +174,13 @@ class Runner(private val nytProcessorProperties: NytProcessorProperties) {
 	@Bean
 	fun go() {
 		this.log.info("by-state: ${this.nytProcessorProperties.byStateUrl}")
-		this.log.info("by-county: ${this.nytProcessorProperties.byStateUrl}")
+		this.log.info("by-county: ${this.nytProcessorProperties.byCountyUrl}")
+		this.log.info("runtime: ${this.nytProcessorProperties.runtime}")
 	}
 }
 
 
 @ConstructorBinding
 @ConfigurationProperties("nytimes")
-data class NytProcessorProperties(val byCountyUrl: Resource, val byStateUrl: Resource)
+data class NytProcessorProperties(val byCountyUrl: Resource, val byStateUrl: Resource, val runtime: Long)
 
