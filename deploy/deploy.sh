@@ -7,13 +7,14 @@ DB_SERVICE_NAME=covid19-db
 
 cf d -f ${APP_NAME}
 
+cf push -b java_buildpack -u none --no-route --no-start -p target/${APP_NAME}.jar ${APP_NAME}
+
 cf s | grep ${DB_SERVICE_NAME} || cf cs elephantsql turtle ${DB_SERVICE_NAME}
 cf bs ${APP_NAME} ${DB_SERVICE_NAME}
 
 cf s | grep ${SCHEDULER_SERVICE_NAME} || cf cs scheduler-for-pcf standard ${SCHEDULER_SERVICE_NAME}
 cf bs ${APP_NAME} ${SCHEDULER_SERVICE_NAME}
 
-cf push -b java_buildpack -u none --no-route --no-start -p target/${APP_NAME}.jar ${APP_NAME}
 
 cf set-env ${APP_NAME} COVIDDB_PW   ${COVIDDB_PW}
 cf set-env ${APP_NAME} COVIDDB_USER ${COVIDDB_USER}
